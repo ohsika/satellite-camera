@@ -106,23 +106,32 @@ navigator.geolocation.getCurrentPosition(async pos=>{
    ===================================================== */
 async function scanNearbyPanos(lat, lon){
 
-    // 약 ±200m offset
-    const offsets = [
-      0,
-      0.0006, -0.0006,      // 약 60m
-      0.0012, -0.0012,      // 약 120m
-      0.0018, -0.0018       // 약 180~200m
-    ];
+    // ===== 1km GRID 스캔 준비 =====
+    // lat: 약 ±0.009 → 1000m
+    // lon: 약 ±0.0115 → 1000m
+    const latOffsets = [];
+    const lonOffsets = [];
 
+    // 100m 단위로 1km까지 (총 21개)
+    for(let i = -10; i <= 10; i++){
+        latOffsets.push(i * 0.0009);      // ≈100m
+        lonOffsets.push(i * 0.00115);     // ≈100m
+    }
+
+    // GRID 생성 (441 포인트)
     const attempts = [];
-    for(let dx of offsets){
-        for(let dy of offsets){
-            attempts.push([lat+dx, lon+dy]);
+    for(let dx of latOffsets){
+        for(let dy of lonOffsets){
+            attempts.push([lat + dx, lon + dy]);
         }
     }
 
     panoList = [];
 
+    document.getElementById("status").innerText =
+        "📡 주변 1km StreetView 검색중…";
+
+    // metadata 요청
     for(let p of attempts){
         let meta = await getPanoMeta(p[0], p[1]);
         if(meta && meta.status === "OK"){
@@ -140,16 +149,17 @@ async function scanNearbyPanos(lat, lon){
 
     if(panoList.length === 0){
         document.getElementById("status").innerText =
-            "❌ 주변 200m 내 StreetView 없음";
+            "❌ 주변 1km 내 StreetView 없음";
         return;
     }
 
     document.getElementById("status").innerText =
-        `✔ StreetView ${panoList.length}개 발견 → 연도 구성중`;
+        `✔ 주변 1km StreetView ${panoList.length}개 발견 → 연도 구성중`;
 
     populateYearPicker();
     startRendering();
 }
+
 
 /* =====================================================
    metadata API
@@ -254,3 +264,4 @@ function capture(){
 
 </body>
 </html>
+
