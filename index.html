@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Nearest StreetView Auto Camera</title>
+<title>High-Res StreetView Camera</title>
 
 <style>
 body { margin:0; background:#111; color:white; text-align:center; font-family:sans-serif; }
 button {
-  margin-top:20px;
+  margin-top:15px;
   padding:15px 25px;
   font-size:20px;
   background:#333;
@@ -16,24 +16,37 @@ button {
   border-radius:10px;
   color:white;
 }
-canvas { margin-top:20px; border-radius:10px; }
+canvas {
+  margin-top:20px;
+  border-radius:12px;
+  background:#000;
+}
+input {
+  padding:10px;
+  border-radius:10px;
+  border:none;
+  margin-top:15px;
+  font-size:18px;
+}
 h3 { margin-top:10px; color:#ccc; font-size:16px; }
 </style>
 </head>
 
 <body>
 
-<h2>📡 Auto StreetView Camera (Nearest Panorama)</h2>
-<h3 id="status">📍 GPS 위치 얻는 중...</h3>
+<h2>📡 High-Resolution StreetView Camera</h2>
+<h3 id="status">GPS 위치 얻는 중...</h3>
+
+<input type="date" id="datePicker">
 
 <button onclick="shoot()">📷 셔터</button>
 
-<canvas id="canvas" width="400" height="400"></canvas>
+<canvas id="canvas" width="1024" height="1024"></canvas>
 
 <h3 id="angle">roll=0 pitch=0 yaw=0</h3>
 
 <script>
-const API_KEY = "AIzaSyCJwQpLT9pLj_zZIfFVN007MDOPnTqs5Gs";  // ← 너 API 키
+const API_KEY = "AIzaSyCJwQpLT9pLj_zZIfFVN007MDOPnTqs5Gs";  // ← 키
 
 let lat=null, lon=null;
 let roll=0, pitch=0, yaw=0;
@@ -41,16 +54,16 @@ let canvas=document.getElementById("canvas");
 let ctx=canvas.getContext("2d");
 let img=new Image();
 
-function updateStatus(msg){ 
-    document.getElementById("status").innerText = msg; 
+function updateStatus(msg){
+    document.getElementById("status").innerText = msg;
 }
 
-// -------------------------------
-// 1) GPS 얻기
-// -------------------------------
+// -------------------------
+// 1. GPS
+// -------------------------
 function initGPS(){
     if (!navigator.geolocation){
-        updateStatus("❌ GPS 지원 안됨");
+        updateStatus("❌ GPS 미지원");
         return;
     }
     navigator.geolocation.getCurrentPosition(
@@ -66,21 +79,20 @@ function initGPS(){
     );
 }
 
-// -------------------------------
-// 2) 자이로 읽기
-// -------------------------------
+// -------------------------
+// 2. 자이로
+// -------------------------
 window.addEventListener("deviceorientation", e=>{
     roll=e.gamma||0;
     pitch=e.beta||0;
     yaw=e.alpha||0;
-
     document.getElementById("angle").innerText =
         `roll=${roll.toFixed(1)} pitch=${pitch.toFixed(1)} yaw=${yaw.toFixed(1)}`;
 });
 
-// -------------------------------
-// 3) 해당 위치에 StreetView 있는지 확인
-// -------------------------------
+// -------------------------
+// 3. 메타 요청
+// -------------------------
 async function getStreetViewMeta(lat, lon){
     let url =
     `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lon}&key=${API_KEY}`;
@@ -88,83 +100,79 @@ async function getStreetViewMeta(lat, lon){
     return await res.json();
 }
 
-// -------------------------------
-// 4) 주변에서 가장 가까운 StreetView 탐색
-// 반경 5m → 15m → 30m → 50m → 100m → ... 300m까지 증가
-// -------------------------------
+// -------------------------
+// 4. 주변 스트리트뷰 자동 탐색
+// -------------------------
 async function findNearestStreetView(lat, lon){
-    const radii = [5, 15, 30, 50, 100, 200, 300];
-
+    const radii=[5,15,30,50,100,200,300];
     for(let r of radii){
         let url =
-        `https://maps.googleapis.com/maps/api/streetview/metadata?` +
-        `location=${lat},${lon}&radius=${r}&key=${API_KEY}`;
-
+        `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lon}&radius=${r}&key=${API_KEY}`;
         let res = await fetch(url);
         let meta = await res.json();
-
         if(meta.status==="OK"){
-            return { 
-                pano_id: meta.pano_id,
+            return {
                 lat: meta.location.lat,
                 lon: meta.location.lng,
-                radius: r
+                radius: r,
+                pano_id: meta.pano_id
             };
         }
     }
     return null;
 }
 
-// -------------------------------
-// 5) 셔터: StreetView 있으면 바로, 없으면 근처 자동탐색
-// -------------------------------
+// -------------------------
+// 5. 셔터
+// -------------------------
 async function shoot(){
-    if(lat===null || lon===null){
+    if(lat===null||lon===null){
         updateStatus("GPS 준비중...");
         return;
     }
 
     updateStatus("🔎 스트리트뷰 검색 중...");
 
+    let pickedDate = document.getElementById("datePicker").value;
+    if(!pickedDate) pickedDate = "최근 날짜"; // 표시만
+
     let meta = await getStreetViewMeta(lat, lon);
 
     let target_lat = lat;
     let target_lon = lon;
-    let infoText = "";
+    let msg="";
 
     if(meta.status!=="OK"){
-        updateStatus("❌ 현재 위치에 스트리트뷰 없음 → 주변 탐색 중...");
+        updateStatus("❌ 현재 위치 없음 → 근처 탐색");
 
         let near = await findNearestStreetView(lat, lon);
-
         if(!near){
-            updateStatus("❌ 주변 300m 내 스트리트뷰 없음 (위성 필요)");
+            updateStatus("❌ 반경 300m에 스트리트뷰 없음");
             return;
         }
 
         target_lat = near.lat;
         target_lon = near.lon;
-
-        infoText = `📍 근처 스트리트뷰 사용 (${near.radius}m 이내)`;
-
-    } else {
-        infoText = "📍 현재 위치 스트리트뷰";
+        msg = `📍 근처 스트리트뷰 (${near.radius}m 이내), 날짜: ${pickedDate}`;
+    }
+    else{
+        msg = `📍 현재 위치 스트리트뷰, 날짜: ${pickedDate}`;
     }
 
     let heading = (yaw+360)%360;
     let pitch_v = Math.max(-90, Math.min(90, pitch));
 
     let url =
-    `https://maps.googleapis.com/maps/api/streetview?size=400x400` +
+    `https://maps.googleapis.com/maps/api/streetview?size=2048x2048` +   // 고화질
     `&location=${target_lat},${target_lon}` +
     `&heading=${heading}` +
     `&pitch=${pitch_v}` +
     `&fov=90` +
     `&key=${API_KEY}`;
 
-    img.src=url;
+    img.src = url;
 
-    img.onload=()=>{
+    img.onload = ()=>{
         ctx.clearRect(0,0,canvas.width,canvas.height);
 
         ctx.save();
@@ -173,11 +181,11 @@ async function shoot(){
         ctx.drawImage(img,-canvas.width/2,-canvas.height/2,canvas.width,canvas.height);
         ctx.restore();
 
-        updateStatus(infoText+"  ✔ 완료");
+        updateStatus(msg + " ✔");
     };
 
-    img.onerror=()=>{
-        updateStatus("❌ 로딩 실패 (API or 네트워크 확인)");
+    img.onerror = ()=>{
+        updateStatus("❌ 로딩 실패(API 또는 네트워크)");
     };
 }
 
