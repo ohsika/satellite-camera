@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Auto StreetView Camera</title>
+<title>Nearest StreetView Auto Camera</title>
 
 <style>
 body { margin:0; background:#111; color:white; text-align:center; font-family:sans-serif; }
@@ -23,7 +23,7 @@ h3 { margin-top:10px; color:#ccc; font-size:16px; }
 
 <body>
 
-<h2>📡 Auto StreetView Camera</h2>
+<h2>📡 Auto StreetView Camera (Nearest Panorama)</h2>
 <h3 id="status">📍 GPS 위치 얻는 중...</h3>
 
 <button onclick="shoot()">📷 셔터</button>
@@ -33,20 +33,20 @@ h3 { margin-top:10px; color:#ccc; font-size:16px; }
 <h3 id="angle">roll=0 pitch=0 yaw=0</h3>
 
 <script>
-const API_KEY = "AIzaSyCJwQpLT9pLj_zZIfFVN007MDOPnTqs5Gs";  // 너 API 키
+const API_KEY = "AIzaSyCJwQpLT9pLj_zZIfFVN007MDOPnTqs5Gs";  // ← 너 API 키
 
-let lat = null, lon = null;
+let lat=null, lon=null;
 let roll=0, pitch=0, yaw=0;
-let img = new Image();
-let canvas = document.getElementById("canvas");
-let ctx = canvas.getContext("2d");
+let canvas=document.getElementById("canvas");
+let ctx=canvas.getContext("2d");
+let img=new Image();
 
 function updateStatus(msg){ 
     document.getElementById("status").innerText = msg; 
 }
 
 // -------------------------------
-// 1) GPS 자동 읽기
+// 1) GPS 얻기
 // -------------------------------
 function initGPS(){
     if (!navigator.geolocation){
@@ -54,83 +54,131 @@ function initGPS(){
         return;
     }
     navigator.geolocation.getCurrentPosition(
-        (pos)=>{
-            lat = pos.coords.latitude;
-            lon = pos.coords.longitude;
+        pos=>{
+            lat=pos.coords.latitude;
+            lon=pos.coords.longitude;
             updateStatus(`위치 OK: ${lat.toFixed(5)}, ${lon.toFixed(5)}`);
         },
-        (err)=>{
+        err=>{
             updateStatus("❌ GPS 권한 거부됨");
         },
-        { enableHighAccuracy:true }
+        {enableHighAccuracy:true}
     );
 }
 
 // -------------------------------
-// 2) 센서 기울기 읽기
+// 2) 자이로 읽기
 // -------------------------------
-window.addEventListener("deviceorientation", (e)=>{
-    roll = e.gamma || 0;   // 좌우 기울기
-    pitch = e.beta || 0;   // 상하 기울기
-    yaw = e.alpha || 0;    // 방향 (0~360)
+window.addEventListener("deviceorientation", e=>{
+    roll=e.gamma||0;
+    pitch=e.beta||0;
+    yaw=e.alpha||0;
 
     document.getElementById("angle").innerText =
-        `roll=${roll.toFixed(1)}  pitch=${pitch.toFixed(1)}  yaw=${yaw.toFixed(1)}`;
+        `roll=${roll.toFixed(1)} pitch=${pitch.toFixed(1)} yaw=${yaw.toFixed(1)}`;
 });
 
 // -------------------------------
-// 3) STREETVIEW + IMU 적용한 셔터
+// 3) 해당 위치에 StreetView 있는지 확인
 // -------------------------------
-function shoot(){
-    if(lat === null || lon === null){
+async function getStreetViewMeta(lat, lon){
+    let url =
+    `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lon}&key=${API_KEY}`;
+    let res = await fetch(url);
+    return await res.json();
+}
+
+// -------------------------------
+// 4) 주변에서 가장 가까운 StreetView 탐색
+// 반경 5m → 15m → 30m → 50m → 100m → ... 300m까지 증가
+// -------------------------------
+async function findNearestStreetView(lat, lon){
+    const radii = [5, 15, 30, 50, 100, 200, 300];
+
+    for(let r of radii){
+        let url =
+        `https://maps.googleapis.com/maps/api/streetview/metadata?` +
+        `location=${lat},${lon}&radius=${r}&key=${API_KEY}`;
+
+        let res = await fetch(url);
+        let meta = await res.json();
+
+        if(meta.status==="OK"){
+            return { 
+                pano_id: meta.pano_id,
+                lat: meta.location.lat,
+                lon: meta.location.lng,
+                radius: r
+            };
+        }
+    }
+    return null;
+}
+
+// -------------------------------
+// 5) 셔터: StreetView 있으면 바로, 없으면 근처 자동탐색
+// -------------------------------
+async function shoot(){
+    if(lat===null || lon===null){
         updateStatus("GPS 준비중...");
         return;
     }
-    updateStatus("🚗 스트리트뷰 불러오는 중...");
 
-    // heading = yaw값 그대로 사용 (정규화)
-    let heading = (yaw + 360) % 360;
-    // pitch는 -90~90만 허용 가능
+    updateStatus("🔎 스트리트뷰 검색 중...");
+
+    let meta = await getStreetViewMeta(lat, lon);
+
+    let target_lat = lat;
+    let target_lon = lon;
+    let infoText = "";
+
+    if(meta.status!=="OK"){
+        updateStatus("❌ 현재 위치에 스트리트뷰 없음 → 주변 탐색 중...");
+
+        let near = await findNearestStreetView(lat, lon);
+
+        if(!near){
+            updateStatus("❌ 주변 300m 내 스트리트뷰 없음 (위성 필요)");
+            return;
+        }
+
+        target_lat = near.lat;
+        target_lon = near.lon;
+
+        infoText = `📍 근처 스트리트뷰 사용 (${near.radius}m 이내)`;
+
+    } else {
+        infoText = "📍 현재 위치 스트리트뷰";
+    }
+
+    let heading = (yaw+360)%360;
     let pitch_v = Math.max(-90, Math.min(90, pitch));
 
-    // 스트리트뷰 API
     let url =
     `https://maps.googleapis.com/maps/api/streetview?size=400x400` +
-    `&location=${lat},${lon}` +
+    `&location=${target_lat},${target_lon}` +
     `&heading=${heading}` +
     `&pitch=${pitch_v}` +
     `&fov=90` +
     `&key=${API_KEY}`;
 
-    img.src = url;
+    img.src=url;
 
-    img.onload = ()=>{
-        updateStatus("🎛 기울기(roll) 렌더링 중...");
-        drawWithRoll();
+    img.onload=()=>{
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+
+        ctx.save();
+        ctx.translate(canvas.width/2, canvas.height/2);
+        ctx.rotate(roll*Math.PI/180);
+        ctx.drawImage(img,-canvas.width/2,-canvas.height/2,canvas.width,canvas.height);
+        ctx.restore();
+
+        updateStatus(infoText+"  ✔ 완료");
     };
 
-    img.onerror = ()=>{
-        updateStatus("❌ 로딩 실패 (StreetView API 권한 확인)");
+    img.onerror=()=>{
+        updateStatus("❌ 로딩 실패 (API or 네트워크 확인)");
     };
-}
-
-// -------------------------------
-// 4) 롤(roll) 회전 보정 (스트리트뷰엔 roll 매개변수 없음)
-// -------------------------------
-function drawWithRoll(){
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-
-    ctx.save();
-
-    // 캔버스 중앙을 기준으로 roll 적용
-    ctx.translate(canvas.width/2, canvas.height/2);
-    ctx.rotate(roll * Math.PI/180);
-
-    ctx.drawImage(img, -canvas.width/2, -canvas.height/2, canvas.width, canvas.height);
-
-    ctx.restore();
-
-    updateStatus("📷 완료");
 }
 
 initGPS();
