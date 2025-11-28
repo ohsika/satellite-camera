@@ -80,17 +80,29 @@ function shoot(){
         updateStatus("GPS 준비중...");
         return;
     }
-    updateStatus("🌍 위성 사진 불러오는 중...");
+    updateStatus("📍 스트리트뷰 불러오는 중...");
 
-    let url = 
-        `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lon}&zoom=16&size=400x400&maptype=satellite&key=${API_KEY}`;
-    
+    let heading = (yaw + 360) % 360;   // 0~360 정규화
+    let pitch_v = Math.max(-90, Math.min(90, pitch)); // -90~90로 제한
+
+    let url =
+    `https://maps.googleapis.com/maps/api/streetview?size=400x400` +
+    `&location=${lat},${lon}` +
+    `&heading=${heading}` +
+    `&pitch=${pitch_v}` +
+    `&fov=90` +
+    `&key=${API_KEY}`;
 
     img.src = url;
 
     img.onload = ()=>{
-        updateStatus("🎛 기울기 적용 중...");
-        drawTilted();
+        updateStatus("🎛 기울기 적용 완료");
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    };
+
+    img.onerror = ()=>{
+        updateStatus("❌ 로딩 실패 (모바일 브라우저 보안 설정 또는 API 제한)");
     };
 }
 
@@ -118,5 +130,6 @@ initGPS();
 
 </body>
 </html>
+
 
 
