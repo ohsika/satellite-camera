@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>StreetView TimeMachine – Final Version</title>
+<title>StreetView TimeMachine – FINAL 200m</title>
 
 <style>
 body { margin:0; background:#111; color:white; text-align:center; font-family:sans-serif; }
@@ -49,12 +49,12 @@ select {
 <h3 id="angle">roll=0 pitch=0 yaw=0</h3>
 
 <script>
-// =====================================================
-// CONFIG
-// =====================================================
-const API_KEY = "YOUR_API_KEY_HERE";   // 넣어라
+/* =====================================================
+   CONFIG
+   ===================================================== */
+const API_KEY = "YOUR_API_KEY_HERE";   // ← 실키 넣기
 
-// GPS 실패 → fallback
+// GPS 실패 fallback
 const SAFE_LAT = 37.5662952;
 const SAFE_LON = 126.9779451;
 
@@ -65,9 +65,9 @@ let roll=0, pitch=0, yaw=0;
 let panoList = [];
 let selectedPano = null;
 
-// =====================================================
-// Device orientation
-// =====================================================
+/* =====================================================
+   Device orientation
+   ===================================================== */
 window.addEventListener("deviceorientation", e=>{
     roll = e.gamma || 0;
     pitch = e.beta || 0;
@@ -77,9 +77,9 @@ window.addEventListener("deviceorientation", e=>{
         `roll=${roll.toFixed(1)} pitch=${pitch.toFixed(1)} yaw=${yaw.toFixed(1)}`;
 });
 
-// =====================================================
-// GPS → pano 스캔 시작
-// =====================================================
+/* =====================================================
+   GPS → pano 스캔
+   ===================================================== */
 navigator.geolocation.getCurrentPosition(async pos=>{
     let la = pos.coords.latitude;
     let lo = pos.coords.longitude;
@@ -101,16 +101,17 @@ navigator.geolocation.getCurrentPosition(async pos=>{
     await scanNearbyPanos(SAFE_LAT, SAFE_LON);
 });
 
-// =====================================================
-// 핵심 기능: 주변 스트리트뷰 자동 탐색
-// =====================================================
+/* =====================================================
+   200m 범위 자동 탐색 (핵심)
+   ===================================================== */
 async function scanNearbyPanos(lat, lon){
 
-    // 주변 탐색 범위 (0 ~ 약 70m)
+    // 약 ±200m offset
     const offsets = [
-      0, 0.0001, -0.0001, 0.0002, -0.0002,
-      0.0003, -0.0003, 0.0004, -0.0004,
-      0.0005, -0.0005, 0.0007, -0.0007
+      0,
+      0.0006, -0.0006,      // 약 60m
+      0.0012, -0.0012,      // 약 120m
+      0.0018, -0.0018       // 약 180~200m
     ];
 
     const attempts = [];
@@ -122,7 +123,6 @@ async function scanNearbyPanos(lat, lon){
 
     panoList = [];
 
-    // 모든 점을 StreetView metadata에 걸기
     for(let p of attempts){
         let meta = await getPanoMeta(p[0], p[1]);
         if(meta && meta.status === "OK"){
@@ -135,25 +135,25 @@ async function scanNearbyPanos(lat, lon){
         }
     }
 
-    // 중복 pano 제거
+    // 중복 제거
     panoList = [...new Map(panoList.map(p=>[p.pano_id, p])).values()];
 
     if(panoList.length === 0){
         document.getElementById("status").innerText =
-            "❌ 주변 70m 내 StreetView 없음";
+            "❌ 주변 200m 내 StreetView 없음";
         return;
     }
 
     document.getElementById("status").innerText =
-        `✔ 주변 StreetView ${panoList.length}개 발견 → 연도 구성중`;
+        `✔ StreetView ${panoList.length}개 발견 → 연도 구성중`;
 
     populateYearPicker();
     startRendering();
 }
 
-// =====================================================
-// StreetView metadata API
-// =====================================================
+/* =====================================================
+   metadata API
+   ===================================================== */
 async function getPanoMeta(lat, lon){
     const url =
       `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lon}&key=${API_KEY}`;
@@ -161,9 +161,9 @@ async function getPanoMeta(lat, lon){
     return await r.json();
 }
 
-// =====================================================
-// 연도 목록 생성
-// =====================================================
+/* =====================================================
+   연도 목록 생성
+   ===================================================== */
 function populateYearPicker(){
 
     const yearSet = new Set();
@@ -188,9 +188,9 @@ function populateYearPicker(){
     picker.onchange = pickPano;
 }
 
-// =====================================================
-// 선택한 연도의 pano 선택
-// =====================================================
+/* =====================================================
+   연도 선택 → pano 선택
+   ===================================================== */
 function pickPano(){
     const y = document.getElementById("yearPicker").value;
     if(!y) return;
@@ -204,9 +204,9 @@ function pickPano(){
     if(best) selectedPano = best;
 }
 
-// =====================================================
-// 실시간 렌더링
-// =====================================================
+/* =====================================================
+   실시간 렌더링
+   ===================================================== */
 function startRendering(){
     setInterval(renderFrame, 200);
 }
@@ -240,9 +240,9 @@ function renderFrame(){
     };
 }
 
-// =====================================================
-// 캡처
-// =====================================================
+/* =====================================================
+   캡처
+   ===================================================== */
 function capture(){
     let url = canvas.toDataURL("image/png");
     let a = document.createElement("a");
