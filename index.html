@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TimeMachine StreetView Live Camera – Stable</title>
+<title>TimeMachine StreetView – Year Picker Edition</title>
 
 <style>
 body { margin:0; background:#111; color:white; text-align:center; font-family:sans-serif; }
@@ -22,7 +22,7 @@ button {
   border-radius:12px;
   background:black;
 }
-input {
+select {
   margin-top:10px;
   padding:8px;
   border-radius:8px;
@@ -35,10 +35,14 @@ input {
 
 <body>
 
-<h2>📡 TimeMachine StreetView Live Camera – Stable</h2>
+<h2>🕒 TimeMachine StreetView – 연도 선택</h2>
 <h3 id="status">GPS 로딩중…</h3>
 
-<input type="date" id="datePicker">
+<!-- 연도 선택 -->
+<select id="yearPicker">
+  <option value="">연도 로딩중…</option>
+</select>
+
 <button onclick="capture()">📸 캡처</button>
 
 <canvas id="canvas" width="1024" height="1024"></canvas>
@@ -49,166 +53,180 @@ input {
 // =====================================================
 // CONFIG
 // =====================================================
-const API_KEY = "AIzaSyCJwQpLT9pLj_zZIfFVN007MDOPnTqs5Gs";   // 너의 실제 키
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
+const API_KEY = "YOUR_API_KEY_HERE";  // ← 너의 실제 키
 
-// 도로 스캔이 실패할 경우 fallback 좌표(서울 시청)
+// fallback 좌표 (서울시청)
 const SAFE_LAT = 37.5662952;
 const SAFE_LON = 126.9779451;
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
 
 // orientation
 let roll=0, pitch=0, yaw=0;
 
-// pano list
+// pano list (여러 연도 포함)
 let panoList = [];
 let selectedPano = null;
 
 // =====================================================
-// 1) Device Orientation
+// Orientation
 // =====================================================
 window.addEventListener("deviceorientation", e=>{
     roll = e.gamma || 0;
     pitch = e.beta || 0;
     yaw = e.alpha || 0;
+
     document.getElementById("angle").innerText =
         `roll=${roll.toFixed(1)} pitch=${pitch.toFixed(1)} yaw=${yaw.toFixed(1)}`;
 });
 
 // =====================================================
-// 2) GPS + 안정적 스캔
+// GPS 받기
 // =====================================================
 navigator.geolocation.getCurrentPosition(async pos=>{
     let la = pos.coords.latitude;
     let lo = pos.coords.longitude;
 
-    // GPS 보정 (실내/건물일 때 바로 fallback)
-    if(isNaN(la) || isNaN(lo)) {
+    if(isNaN(la) || isNaN(lo)){
         la = SAFE_LAT;
         lo = SAFE_LON;
     }
 
     document.getElementById("status").innerText =
-        `GPS 위치 감지됨: ${la.toFixed(5)}, ${lo.toFixed(5)} → 도로 스캔중`;
+        `GPS OK → ${la.toFixed(5)}, ${lo.toFixed(5)} | pano 스캔중`;
 
-    await loadNearbyPanos(la, lo);
-
+    await scanPanos(la, lo);
 }, async err=>{
-
-    // GPS 전체 실패 → fallback 좌표로 진행
     document.getElementById("status").innerText =
-        "GPS 실패 → 서울 중심좌표 사용";
+        "GPS 실패 → fallback 좌표로 스캔중";
 
-    await loadNearbyPanos(SAFE_LAT, SAFE_LON);
+    await scanPanos(SAFE_LAT, SAFE_LON);
 });
 
 // =====================================================
-// 3) pano 불러오기 (안정판)
+// pano 메타데이터 스캔 (주변 30~40개 attempt)
 // =====================================================
-async function loadNearbyPanos(lat, lon){
+async function scanPanos(lat, lon){
+    const attempts = [];
+    const offsets = [0,0.0002,-0.0002,0.0004,-0.0004,0.0006,-0.0006];
 
-    // ➊ StreetView metadata 직접 스캔 (도로 실패해도 작동)
-    const url =
-      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lon}&key=${API_KEY}`;
+    for(let dx of offsets){
+        for(let dy of offsets){
+            attempts.push([lat+dx, lon+dy]);
+        }
+    }
 
-    const res = await fetch(url);
-    const meta = await res.json();
+    panoList = [];
 
-    if(meta.status !== "OK"){
+    for(let p of attempts){
+        let meta = await getPanoMeta(p[0], p[1]);
+        if(meta && meta.status === "OK"){
+            panoList.push({
+                pano_id: meta.pano_id,
+                lat: meta.location.lat,
+                lon: meta.location.lng,
+                date: meta.date  // "YYYY-MM"
+            });
+        }
+    }
+
+    // 중복 제거
+    panoList = [...new Map(panoList.map(p=>[p.pano_id, p])).values()];
+
+    if(panoList.length === 0){
         document.getElementById("status").innerText =
-            `StreetView 없음 → fallback 사용`;
-
-        // 중심 좌표로 fallback metadata
-        await loadFallbackPano();
-        startRendering();
+            "이 위치에는 StreetView 데이터가 없습니다.";
         return;
     }
 
-    panoList = [{
-        pano_id: meta.pano_id,
-        lat: meta.location.lat,
-        lon: meta.location.lng,
-        date: meta.date
-    }];
-
     document.getElementById("status").innerText =
-        `pano 1개 확보됨: ${meta.pano_id} (${meta.date})`;
+        `pano ${panoList.length}개 확보됨 → 연도 추출중`;
 
+    populateYearPicker();
     startRendering();
 }
 
 // =====================================================
-// 4) fallback pano (항상 존재하는 좌표)
+// StreetView Metadata
 // =====================================================
-async function loadFallbackPano(){
+async function getPanoMeta(la, lo){
     const url =
-      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${SAFE_LAT},${SAFE_LON}&key=${API_KEY}`;
-
-    const res = await fetch(url);
-    const meta = await res.json();
-
-    panoList = [{
-        pano_id: meta.pano_id,
-        lat: meta.location.lat,
-        lon: meta.location.lng,
-        date: meta.date
-    }];
+      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${la},${lo}&key=${API_KEY}`;
+    const r = await fetch(url);
+    return await r.json();
 }
 
 // =====================================================
-// 5) 날짜 선택 (선택 안하면 그냥 1개 사용)
+// 연도 선택 UI 생성
 // =====================================================
-function pickPano(){
-    if(panoList.length === 0) return null;
-    if(panoList.length === 1) return panoList[0];
-
-    let dateVal = document.getElementById("datePicker").value;
-    if(!dateVal) return panoList[0];
-
-    const target = dateVal.slice(0,7);
-
-    let best=null, bestDiff=1e20;
+function populateYearPicker(){
+    const years = new Set();
 
     panoList.forEach(p=>{
-        let d1 = Date.parse(p.date+"-01");
-        let d2 = Date.parse(target+"-01");
-        let diff = Math.abs(d1-d2);
-        if(diff<bestDiff){
-            bestDiff=diff;
-            best=p;
-        }
+        const y = p.date.split("-")[0];  // YYYY-MM 중 YYYY만
+        years.add(y);
     });
 
-    return best;
+    const arr = [...years].sort(); // 오름차순 정렬
+
+    const sel = document.getElementById("yearPicker");
+    sel.innerHTML = "";
+
+    arr.forEach(y=>{
+        const op = document.createElement("option");
+        op.value = y;
+        op.innerText = `${y}년`;
+        sel.appendChild(op);
+    });
+
+    sel.onchange = ()=> pickPano();
 }
 
 // =====================================================
-// 6) 렌더링 루프
+// 선택한 연도의 pano 고르기
+// =====================================================
+function pickPano(){
+    const y = document.getElementById("yearPicker").value;
+    if(!y) return;
+
+    // 입력된 연도 선택
+    let best=null;
+
+    panoList.forEach(p=>{
+        if(p.date.startsWith(y)) best = p;
+    });
+
+    if(best) selectedPano = best;
+}
+
+// =====================================================
+// 렌더링 루프
 // =====================================================
 function startRendering(){
-    setInterval(()=>renderFrame(), 200);
+    setInterval(renderFrame, 200);
 }
 
 function renderFrame(){
+    if(!selectedPano){
+        // 기본값: 첫 번째 pano
+        selectedPano = panoList[0];
+    }
 
-    selectedPano = pickPano();
-    if(!selectedPano) return;
+    const heading = (yaw+360)%360;
+    const pitch_v = Math.max(-90, Math.min(90, pitch));
 
-    let heading = (yaw+360)%360;
-    let pitch_v = Math.max(-90, Math.min(90, pitch));
-
-    let url =
+    const url =
         `https://maps.googleapis.com/maps/api/streetview?size=2048x2048`+
         `&pano=${selectedPano.pano_id}`+
         `&heading=${heading}`+
         `&pitch=${pitch_v}`+
-        `&fov=90`+
-        `&key=${API_KEY}`;
+        `&fov=90&key=${API_KEY}`;
 
-    let img = new Image();
-    img.src=url;
+    const img = new Image();
+    img.src = url;
 
-    img.onload=()=>{
+    img.onload = ()=>{
         ctx.clearRect(0,0,canvas.width,canvas.height);
         ctx.save();
         ctx.translate(canvas.width/2, canvas.height/2);
@@ -217,17 +235,12 @@ function renderFrame(){
         ctx.restore();
 
         document.getElementById("status").innerText =
-            `📸 pano=${selectedPano.pano_id} | ${selectedPano.date}`;
-    };
-
-    img.onerror = ()=>{
-        document.getElementById("status").innerText =
-            `이미지 로드 실패 → 재시도중…`;
+            `📸 ${selectedPano.date} | pano=${selectedPano.pano_id}`;
     };
 }
 
 // =====================================================
-// 7) 캡처
+// Capture
 // =====================================================
 function capture(){
     let url = canvas.toDataURL("image/png");
@@ -236,7 +249,6 @@ function capture(){
     a.download="capture.png";
     a.click();
 }
-
 </script>
 
 </body>
