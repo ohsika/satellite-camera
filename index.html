@@ -85,7 +85,7 @@ function shoot(){
     let url = 
         `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lon}&zoom=16&size=400x400&maptype=satellite&key=${API_KEY}`;
     
-    img.crossOrigin = "anonymous";
+
     img.src = url;
 
     img.onload = ()=>{
@@ -118,4 +118,5 @@ initGPS();
 
 </body>
 </html>
+
 
