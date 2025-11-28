@@ -2,8 +2,9 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TimeMachine StreetView Live Camera PRO</title>
+<title>TimeMachine StreetView Live Camera – Stable</title>
 
 <style>
 body { margin:0; background:#111; color:white; text-align:center; font-family:sans-serif; }
@@ -34,8 +35,8 @@ input {
 
 <body>
 
-<h2>🕒 TimeMachine StreetView Live Camera PRO</h2>
-<h3 id="status">GPS 로딩중...</h3>
+<h2>📡 TimeMachine StreetView Live Camera – Stable</h2>
+<h3 id="status">GPS 로딩중…</h3>
 
 <input type="date" id="datePicker">
 <button onclick="capture()">📸 캡처</button>
@@ -45,174 +46,121 @@ input {
 <h3 id="angle">roll=0 pitch=0 yaw=0</h3>
 
 <script>
-// ===========================
+// =====================================================
 // CONFIG
-// ===========================
-const API_KEY = "AIzaSyCJwQpLT9pLj_zZIfFVN007MDOPnTqs5Gs";   // ← 여기 넣기
+// =====================================================
+const API_KEY = "AIzaSyCJwQpLT9pLj_zZIfFVN007MDOPnTqs5Gs";   // 너의 실제 키
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
-// 도로 스냅 샘플 간격 (미터)
-const SAMPLE_INTERVAL = 10;
-const SEARCH_RADIUS_METERS = 1000; // 1km 검색
+// 도로 스캔이 실패할 경우 fallback 좌표(서울 시청)
+const SAFE_LAT = 37.5662952;
+const SAFE_LON = 126.9779451;
 
-// GPS / IMU
-let lat=null, lon=null;
+// orientation
 let roll=0, pitch=0, yaw=0;
 
-// Pano List: {pano_id, lat, lon, date}
+// pano list
 let panoList = [];
 let selectedPano = null;
 
-// ===========================
-// 1) GPS
-// ===========================
-navigator.geolocation.getCurrentPosition(async pos=>{
-    lat = pos.coords.latitude;
-    lon = pos.coords.longitude;
-    document.getElementById("status").innerText = `GPS OK: ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-    await scanAllRoads();
-}, err=>{
-    document.getElementById("status").innerText = "❌ GPS 권한 없음";
-});
-
-// ===========================
-// 2) Orientation
-// ===========================
+// =====================================================
+// 1) Device Orientation
+// =====================================================
 window.addEventListener("deviceorientation", e=>{
     roll = e.gamma || 0;
     pitch = e.beta || 0;
     yaw = e.alpha || 0;
-
     document.getElementById("angle").innerText =
         `roll=${roll.toFixed(1)} pitch=${pitch.toFixed(1)} yaw=${yaw.toFixed(1)}`;
 });
 
-// ===========================
-// 3) Google Roads API – 도로 좌표 수집
-// ===========================
-async function snapToRoads(latArr, lonArr) {
-    const points = latArr.map((la, i)=>`${la},${lonArr[i]}`).join("|");
-    const url = 
-      `https://roads.googleapis.com/v1/snapToRoads?path=${points}&interpolate=true&key=${API_KEY}`;
-    
+// =====================================================
+// 2) GPS + 안정적 스캔
+// =====================================================
+navigator.geolocation.getCurrentPosition(async pos=>{
+    let la = pos.coords.latitude;
+    let lo = pos.coords.longitude;
+
+    // GPS 보정 (실내/건물일 때 바로 fallback)
+    if(isNaN(la) || isNaN(lo)) {
+        la = SAFE_LAT;
+        lo = SAFE_LON;
+    }
+
+    document.getElementById("status").innerText =
+        `GPS 위치 감지됨: ${la.toFixed(5)}, ${lo.toFixed(5)} → 도로 스캔중`;
+
+    await loadNearbyPanos(la, lo);
+
+}, async err=>{
+
+    // GPS 전체 실패 → fallback 좌표로 진행
+    document.getElementById("status").innerText =
+        "GPS 실패 → 서울 중심좌표 사용";
+
+    await loadNearbyPanos(SAFE_LAT, SAFE_LON);
+});
+
+// =====================================================
+// 3) pano 불러오기 (안정판)
+// =====================================================
+async function loadNearbyPanos(lat, lon){
+
+    // ➊ StreetView metadata 직접 스캔 (도로 실패해도 작동)
+    const url =
+      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lon}&key=${API_KEY}`;
+
     const res = await fetch(url);
-    return await res.json();
-}
+    const meta = await res.json();
 
-// 라디안 변환
-function toRad(deg){ return deg * Math.PI/180; }
+    if(meta.status !== "OK"){
+        document.getElementById("status").innerText =
+            `StreetView 없음 → fallback 사용`;
 
-// 거리 = haversine
-function distance(lat1, lon1, lat2, lon2) {
-    const R=6371000;
-    const dLat=toRad(lat2-lat1);
-    const dLon=toRad(lon2-lon1);
-    const a = Math.sin(dLat/2)**2 +
-              Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-              Math.sin(dLon/2)**2;
-    return R*2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-}
-
-// 원형으로 좌표 뿌리기
-function generateSearchRing(centerLat, centerLon, radius) {
-    const pts = [];
-    for(let ang=0; ang<360; ang+=20){
-        const rad = toRad(ang);
-        const dLat = (radius/111111)*Math.cos(rad);
-        const dLon = (radius/(111111*Math.cos(toRad(centerLat))))*Math.sin(rad);
-        pts.push([centerLat+dLat, centerLon+dLon]);
-    }
-    return pts;
-}
-
-// ===========================
-// 4) 주변 모든 도로 수집 + pano_id 스캔
-// ===========================
-async function scanAllRoads(){
-
-    document.getElementById("status").innerText = "📡 RoadsAPI: 도로 스캔중...";
-
-    let rawRoadPoints = [];
-
-    for(let radius=50; radius<=SEARCH_RADIUS_METERS; radius+=200){
-        const ring = generateSearchRing(lat, lon, radius);
-
-        for(let pt of ring){
-            rawRoadPoints.push(pt);
-        }
-    }
-
-    // 도로 스냅
-    let snapped = await snapToRoads(
-        rawRoadPoints.map(p=>p[0]),
-        rawRoadPoints.map(p=>p[1])
-    );
-
-    if(!snapped.snappedPoints){
-        document.getElementById("status").innerText = "❌ RoadsAPI 실패";
+        // 중심 좌표로 fallback metadata
+        await loadFallbackPano();
+        startRendering();
         return;
     }
 
-    // 도로 좌표 수집
-    let roadCoords = snapped.snappedPoints.map(p=>[
-        p.location.latitude,
-        p.location.longitude
-    ]);
-
-    // 간격을 10m로 줄이기 위해 보간
-    let sampled = [];
-    for(let i=0;i<roadCoords.length-1;i++){
-        let [aLat, aLon] = roadCoords[i];
-        let [bLat, bLon] = roadCoords[i+1];
-        let dist = distance(aLat,aLon,bLat,bLon);
-        let steps = Math.ceil(dist / SAMPLE_INTERVAL);
-        for(let s=0;s<=steps;s++){
-            let t = s/steps;
-            sampled.push([
-                aLat + (bLat-aLat)*t,
-                aLon + (bLon-aLon)*t
-            ]);
-        }
-    }
-
-    document.getElementById("status").innerText = `📍 도로샘플 ${sampled.length}개 → pano 스캔중`;
-
-    // pano metadata 수집
-    panoList = [];
-    for(let pt of sampled){
-        let meta = await getPanoByLocation(pt[0], pt[1]);
-        if(meta && meta.status==="OK"){
-            panoList.push({
-                pano_id: meta.pano_id,
-                lat: meta.location.lat,
-                lon: meta.location.lng,
-                date: meta.date
-            });
-        }
-    }
-
-    // 중복 제거
-    panoList = [...new Map(panoList.map(p=>[p.pano_id, p])).values()];
+    panoList = [{
+        pano_id: meta.pano_id,
+        lat: meta.location.lat,
+        lon: meta.location.lng,
+        date: meta.date
+    }];
 
     document.getElementById("status").innerText =
-        `✔ pano 수집 완료: ${panoList.length}개`;
+        `pano 1개 확보됨: ${meta.pano_id} (${meta.date})`;
 
-    startLiveView();
+    startRendering();
 }
 
-async function getPanoByLocation(la, lo){
-    let url = 
-      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${la},${lo}&key=${API_KEY}`;
-    let r = await fetch(url);
-    return await r.json();
+// =====================================================
+// 4) fallback pano (항상 존재하는 좌표)
+// =====================================================
+async function loadFallbackPano(){
+    const url =
+      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${SAFE_LAT},${SAFE_LON}&key=${API_KEY}`;
+
+    const res = await fetch(url);
+    const meta = await res.json();
+
+    panoList = [{
+        pano_id: meta.pano_id,
+        lat: meta.location.lat,
+        lon: meta.location.lng,
+        date: meta.date
+    }];
 }
 
-// ===========================
-// 5) 날짜에 맞춰 pano 선택
-// ===========================
+// =====================================================
+// 5) 날짜 선택 (선택 안하면 그냥 1개 사용)
+// =====================================================
 function pickPano(){
-    if(panoList.length===0) return null;
+    if(panoList.length === 0) return null;
+    if(panoList.length === 1) return panoList[0];
 
     let dateVal = document.getElementById("datePicker").value;
     if(!dateVal) return panoList[0];
@@ -234,14 +182,15 @@ function pickPano(){
     return best;
 }
 
-// ===========================
-// 6) 실시간 StreetView 렌더링
-// ===========================
-function startLiveView(){
+// =====================================================
+// 6) 렌더링 루프
+// =====================================================
+function startRendering(){
     setInterval(()=>renderFrame(), 200);
 }
 
 function renderFrame(){
+
     selectedPano = pickPano();
     if(!selectedPano) return;
 
@@ -268,13 +217,18 @@ function renderFrame(){
         ctx.restore();
 
         document.getElementById("status").innerText =
-            `📸 pano=${selectedPano.pano_id} | date=${selectedPano.date}`;
+            `📸 pano=${selectedPano.pano_id} | ${selectedPano.date}`;
+    };
+
+    img.onerror = ()=>{
+        document.getElementById("status").innerText =
+            `이미지 로드 실패 → 재시도중…`;
     };
 }
 
-// ===========================
-// 7) 캡처 저장
-// ===========================
+// =====================================================
+// 7) 캡처
+// =====================================================
 function capture(){
     let url = canvas.toDataURL("image/png");
     let a = document.createElement("a");
@@ -282,8 +236,8 @@ function capture(){
     a.download="capture.png";
     a.click();
 }
+
 </script>
 
 </body>
 </html>
-
