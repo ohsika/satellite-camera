@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TimeMachine StreetView – Year Picker Edition</title>
+<title>StreetView TimeMachine – Year Only</title>
 
 <style>
 body { margin:0; background:#111; color:white; text-align:center; font-family:sans-serif; }
@@ -23,11 +23,11 @@ button {
   background:black;
 }
 select {
-  margin-top:10px;
-  padding:8px;
-  border-radius:8px;
-  width:60%;
-  font-size:16px;
+  margin-top:12px;
+  padding:12px;
+  width:70%;
+  font-size:18px;
+  border-radius:10px;
   border:none;
 }
 </style>
@@ -35,12 +35,12 @@ select {
 
 <body>
 
-<h2>🕒 TimeMachine StreetView – 연도 선택</h2>
+<h2>🕒 StreetView TimeMachine – 연도 선택</h2>
 <h3 id="status">GPS 로딩중…</h3>
 
-<!-- 연도 선택 -->
+<!-- 연도만 선택 -->
 <select id="yearPicker">
-  <option value="">연도 로딩중…</option>
+  <option>연도 불러오는 중…</option>
 </select>
 
 <button onclick="capture()">📸 캡처</button>
@@ -50,28 +50,25 @@ select {
 <h3 id="angle">roll=0 pitch=0 yaw=0</h3>
 
 <script>
-// =====================================================
+// ----------------------------------------------------
 // CONFIG
-// =====================================================
-const API_KEY = "YOUR_API_KEY_HERE";  // ← 너의 실제 키
+// ----------------------------------------------------
+const API_KEY = "YOUR_API_KEY_HERE";  // ← 네 키 넣기
 
-// fallback 좌표 (서울시청)
+// (GPS 실패 대비) 서울 시청
 const SAFE_LAT = 37.5662952;
 const SAFE_LON = 126.9779451;
 
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
-// orientation
 let roll=0, pitch=0, yaw=0;
-
-// pano list (여러 연도 포함)
 let panoList = [];
 let selectedPano = null;
 
-// =====================================================
-// Orientation
-// =====================================================
+// ----------------------------------------------------
+// Device Orientation
+// ----------------------------------------------------
 window.addEventListener("deviceorientation", e=>{
     roll = e.gamma || 0;
     pitch = e.beta || 0;
@@ -81,35 +78,38 @@ window.addEventListener("deviceorientation", e=>{
         `roll=${roll.toFixed(1)} pitch=${pitch.toFixed(1)} yaw=${yaw.toFixed(1)}`;
 });
 
-// =====================================================
+// ----------------------------------------------------
 // GPS 받기
-// =====================================================
+// ----------------------------------------------------
 navigator.geolocation.getCurrentPosition(async pos=>{
     let la = pos.coords.latitude;
     let lo = pos.coords.longitude;
 
-    if(isNaN(la) || isNaN(lo)){
+    if(!la || !lo){
         la = SAFE_LAT;
         lo = SAFE_LON;
     }
 
     document.getElementById("status").innerText =
-        `GPS OK → ${la.toFixed(5)}, ${lo.toFixed(5)} | pano 스캔중`;
+        `GPS 확인 → StreetView 스캔중…`;
 
     await scanPanos(la, lo);
+
 }, async err=>{
     document.getElementById("status").innerText =
-        "GPS 실패 → fallback 좌표로 스캔중";
+        "GPS 실패 → fallback 좌표 사용";
 
     await scanPanos(SAFE_LAT, SAFE_LON);
 });
 
-// =====================================================
-// pano 메타데이터 스캔 (주변 30~40개 attempt)
-// =====================================================
+// ----------------------------------------------------
+// pano 목록 수집
+// ----------------------------------------------------
 async function scanPanos(lat, lon){
+
+    // 주변 7x7 영역 샘플
     const attempts = [];
-    const offsets = [0,0.0002,-0.0002,0.0004,-0.0004,0.0006,-0.0006];
+    const offsets=[0,0.0002,-0.0002,0.0004,-0.0004,0.0006,-0.0006];
 
     for(let dx of offsets){
         for(let dy of offsets){
@@ -121,12 +121,12 @@ async function scanPanos(lat, lon){
 
     for(let p of attempts){
         let meta = await getPanoMeta(p[0], p[1]);
-        if(meta && meta.status === "OK"){
+        if(meta && meta.status==="OK"){
             panoList.push({
                 pano_id: meta.pano_id,
                 lat: meta.location.lat,
                 lon: meta.location.lng,
-                date: meta.date  // "YYYY-MM"
+                date: meta.date   // YYYY-MM
             });
         }
     }
@@ -136,61 +136,61 @@ async function scanPanos(lat, lon){
 
     if(panoList.length === 0){
         document.getElementById("status").innerText =
-            "이 위치에는 StreetView 데이터가 없습니다.";
+            "이 위치에는 StreetView가 없습니다.";
         return;
     }
 
     document.getElementById("status").innerText =
-        `pano ${panoList.length}개 확보됨 → 연도 추출중`;
+        `StreetView ${panoList.length}개 발견 → 연도 생성중`;
 
     populateYearPicker();
     startRendering();
 }
 
-// =====================================================
-// StreetView Metadata
-// =====================================================
-async function getPanoMeta(la, lo){
+// ----------------------------------------------------
+// StreetView metadata
+// ----------------------------------------------------
+async function getPanoMeta(lat, lon){
     const url =
-      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${la},${lo}&key=${API_KEY}`;
+      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lon}&key=${API_KEY}`;
     const r = await fetch(url);
     return await r.json();
 }
 
-// =====================================================
-// 연도 선택 UI 생성
-// =====================================================
+// ----------------------------------------------------
+// 연도 선택창 자동 생성
+// ----------------------------------------------------
 function populateYearPicker(){
-    const years = new Set();
+
+    const yearSet = new Set();
 
     panoList.forEach(p=>{
-        const y = p.date.split("-")[0];  // YYYY-MM 중 YYYY만
-        years.add(y);
+        const y = p.date.split("-")[0];
+        yearSet.add(y);
     });
 
-    const arr = [...years].sort(); // 오름차순 정렬
+    const years = [...yearSet].sort();
 
-    const sel = document.getElementById("yearPicker");
-    sel.innerHTML = "";
+    const picker = document.getElementById("yearPicker");
+    picker.innerHTML = "";
 
-    arr.forEach(y=>{
+    years.forEach(y=>{
         const op = document.createElement("option");
         op.value = y;
         op.innerText = `${y}년`;
-        sel.appendChild(op);
+        picker.appendChild(op);
     });
 
-    sel.onchange = ()=> pickPano();
+    picker.onchange = pickPano;
 }
 
-// =====================================================
-// 선택한 연도의 pano 고르기
-// =====================================================
+// ----------------------------------------------------
+// 선택한 연도에 해당하는 pano 선택
+// ----------------------------------------------------
 function pickPano(){
     const y = document.getElementById("yearPicker").value;
     if(!y) return;
 
-    // 입력된 연도 선택
     let best=null;
 
     panoList.forEach(p=>{
@@ -200,18 +200,15 @@ function pickPano(){
     if(best) selectedPano = best;
 }
 
-// =====================================================
+// ----------------------------------------------------
 // 렌더링 루프
-// =====================================================
+// ----------------------------------------------------
 function startRendering(){
     setInterval(renderFrame, 200);
 }
 
 function renderFrame(){
-    if(!selectedPano){
-        // 기본값: 첫 번째 pano
-        selectedPano = panoList[0];
-    }
+    if(!selectedPano) selectedPano = panoList[0];
 
     const heading = (yaw+360)%360;
     const pitch_v = Math.max(-90, Math.min(90, pitch));
@@ -224,13 +221,13 @@ function renderFrame(){
         `&fov=90&key=${API_KEY}`;
 
     const img = new Image();
-    img.src = url;
+    img.src=url;
 
-    img.onload = ()=>{
+    img.onload=()=>{
         ctx.clearRect(0,0,canvas.width,canvas.height);
         ctx.save();
-        ctx.translate(canvas.width/2, canvas.height/2);
-        ctx.rotate(roll * Math.PI/180);
+        ctx.translate(canvas.width/2,canvas.height/2);
+        ctx.rotate(roll*Math.PI/180);
         ctx.drawImage(img,-canvas.width/2,-canvas.height/2,canvas.width,canvas.height);
         ctx.restore();
 
@@ -239,9 +236,9 @@ function renderFrame(){
     };
 }
 
-// =====================================================
+// ----------------------------------------------------
 // Capture
-// =====================================================
+// ----------------------------------------------------
 function capture(){
     let url = canvas.toDataURL("image/png");
     let a = document.createElement("a");
