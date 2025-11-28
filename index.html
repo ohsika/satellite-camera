@@ -3,193 +3,221 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>High-Res StreetView Camera</title>
+<title>TimeMachine StreetView Live Camera</title>
 
 <style>
 body { margin:0; background:#111; color:white; text-align:center; font-family:sans-serif; }
 button {
   margin-top:15px;
-  padding:15px 25px;
-  font-size:20px;
-  background:#333;
+  padding:12px 20px;
+  font-size:18px;
+  background:#444;
   border:none;
   border-radius:10px;
   color:white;
 }
-canvas {
-  margin-top:20px;
+#canvas {
+  margin-top:15px;
   border-radius:12px;
-  background:#000;
+  background:black;
 }
 input {
-  padding:10px;
-  border-radius:10px;
+  margin-top:10px;
+  padding:8px;
+  border-radius:8px;
+  width:60%;
+  font-size:16px;
   border:none;
-  margin-top:15px;
-  font-size:18px;
 }
-h3 { margin-top:10px; color:#ccc; font-size:16px; }
 </style>
 </head>
 
 <body>
 
-<h2>📡 High-Resolution StreetView Camera</h2>
-<h3 id="status">GPS 위치 얻는 중...</h3>
+<h2>🕒 TimeMachine StreetView Live Camera</h2>
+<h3 id="status">GPS 얻는 중...</h3>
 
 <input type="date" id="datePicker">
 
-<button onclick="shoot()">📷 셔터</button>
+<button onclick="capture()">📸 캡처 저장</button>
 
 <canvas id="canvas" width="1024" height="1024"></canvas>
 
 <h3 id="angle">roll=0 pitch=0 yaw=0</h3>
 
 <script>
-const API_KEY = "AIzaSyCJwQpLT9pLj_zZIfFVN007MDOPnTqs5Gs";  // ← 키
-
+// ==========================
+//  SETTINGS
+// ==========================
+const API_KEY = "<YOUR_API_KEY>";   // ← 너의 API 키
+const SEARCH_RADII = [20, 50, 100, 200, 300, 500];
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
 let lat=null, lon=null;
+
+// IMU
 let roll=0, pitch=0, yaw=0;
-let canvas=document.getElementById("canvas");
-let ctx=canvas.getContext("2d");
-let img=new Image();
 
-function updateStatus(msg){
-    document.getElementById("status").innerText = msg;
-}
+// Pano List
+let panoList = []; // {pano_id, lat, lon, date}
+let selectedPano = null;
 
-// -------------------------
-// 1. GPS
-// -------------------------
-function initGPS(){
-    if (!navigator.geolocation){
-        updateStatus("❌ GPS 미지원");
-        return;
-    }
-    navigator.geolocation.getCurrentPosition(
-        pos=>{
-            lat=pos.coords.latitude;
-            lon=pos.coords.longitude;
-            updateStatus(`위치 OK: ${lat.toFixed(5)}, ${lon.toFixed(5)}`);
-        },
-        err=>{
-            updateStatus("❌ GPS 권한 거부됨");
-        },
-        {enableHighAccuracy:true}
-    );
-}
+// ==========================
+// 1) GPS
+// ==========================
+navigator.geolocation.getCurrentPosition(
+ res=>{
+   lat=res.coords.latitude;
+   lon=res.coords.longitude;
+   document.getElementById("status").innerText = `GPS OK: ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+   loadPanoList();
+ },
+ err=>{
+   document.getElementById("status").innerText = "❌ GPS 거부됨";
+ }
+);
 
-// -------------------------
-// 2. 자이로
-// -------------------------
+// ==========================
+// 2) Orientation
+// ==========================
 window.addEventListener("deviceorientation", e=>{
-    roll=e.gamma||0;
-    pitch=e.beta||0;
-    yaw=e.alpha||0;
-    document.getElementById("angle").innerText =
-        `roll=${roll.toFixed(1)} pitch=${pitch.toFixed(1)} yaw=${yaw.toFixed(1)}`;
+ roll=e.gamma||0;
+ pitch=e.beta||0;
+ yaw=e.alpha||0;
+ document.getElementById("angle").innerText =
+   `roll=${roll.toFixed(1)} pitch=${pitch.toFixed(1)} yaw=${yaw.toFixed(1)}`;
 });
 
-// -------------------------
-// 3. 메타 요청
-// -------------------------
-async function getStreetViewMeta(lat, lon){
-    let url =
-    `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lon}&key=${API_KEY}`;
-    let res = await fetch(url);
-    return await res.json();
+// ==========================
+// 3) StreetView Metadata
+// ==========================
+async function getMetaFromLatLon(LA, LO, radius){
+ let url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${LA},${LO}&radius=${radius}&key=${API_KEY}`;
+ let r = await fetch(url);
+ return await r.json();
 }
 
-// -------------------------
-// 4. 주변 스트리트뷰 자동 탐색
-// -------------------------
-async function findNearestStreetView(lat, lon){
-    const radii=[5,15,30,50,100,200,300];
-    for(let r of radii){
-        let url =
-        `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lon}&radius=${r}&key=${API_KEY}`;
-        let res = await fetch(url);
-        let meta = await res.json();
-        if(meta.status==="OK"){
-            return {
-                lat: meta.location.lat,
-                lon: meta.location.lng,
-                radius: r,
-                pano_id: meta.pano_id
-            };
-        }
-    }
-    return null;
+async function getMetaFromPano(pano_id){
+ let url = `https://maps.googleapis.com/maps/api/streetview/metadata?pano=${pano_id}&key=${API_KEY}`;
+ let r = await fetch(url);
+ return await r.json();
 }
 
-// -------------------------
-// 5. 셔터
-// -------------------------
-async function shoot(){
-    if(lat===null||lon===null){
-        updateStatus("GPS 준비중...");
-        return;
-    }
+// ==========================
+// 4) panoID 전체 수집
+// ==========================
+async function loadPanoList(){
+ document.getElementById("status").innerText = "📡 스트리트뷰 데이터 수집중...";
 
-    updateStatus("🔎 스트리트뷰 검색 중...");
+ let tmp = [];
 
-    let pickedDate = document.getElementById("datePicker").value;
-    if(!pickedDate) pickedDate = "최근 날짜"; // 표시만
+ for(let R of SEARCH_RADII){
+   let meta = await getMetaFromLatLon(lat, lon, R);
+   if(meta.status==="OK"){
+     tmp.push(meta.pano_id);
+   }
+ }
 
-    let meta = await getStreetViewMeta(lat, lon);
+ // pano id 중복 제거
+ tmp = [...new Set(tmp)];
 
-    let target_lat = lat;
-    let target_lon = lon;
-    let msg="";
+ // 상세 날짜 수집
+ panoList = [];
 
-    if(meta.status!=="OK"){
-        updateStatus("❌ 현재 위치 없음 → 근처 탐색");
+ for(let p of tmp){
+   let m = await getMetaFromPano(p);
+   if(m.status==="OK"){
+     panoList.push({
+       pano_id: p,
+       lat: m.location.lat,
+       lon: m.location.lng,
+       date: m.date  // "YYYY-MM"
+     });
+   }
+ }
 
-        let near = await findNearestStreetView(lat, lon);
-        if(!near){
-            updateStatus("❌ 반경 300m에 스트리트뷰 없음");
-            return;
-        }
+ if(panoList.length===0){
+   document.getElementById("status").innerText = "❌ 주변 스트리트뷰 없음";
+   return;
+ }
 
-        target_lat = near.lat;
-        target_lon = near.lon;
-        msg = `📍 근처 스트리트뷰 (${near.radius}m 이내), 날짜: ${pickedDate}`;
-    }
-    else{
-        msg = `📍 현재 위치 스트리트뷰, 날짜: ${pickedDate}`;
-    }
+ document.getElementById("status").innerText = `📁 수집된 pano 수: ${panoList.length}`;
 
-    let heading = (yaw+360)%360;
-    let pitch_v = Math.max(-90, Math.min(90, pitch));
-
-    let url =
-    `https://maps.googleapis.com/maps/api/streetview?size=2048x2048` +   // 고화질
-    `&location=${target_lat},${target_lon}` +
-    `&heading=${heading}` +
-    `&pitch=${pitch_v}` +
-    `&fov=90` +
-    `&key=${API_KEY}`;
-
-    img.src = url;
-
-    img.onload = ()=>{
-        ctx.clearRect(0,0,canvas.width,canvas.height);
-
-        ctx.save();
-        ctx.translate(canvas.width/2, canvas.height/2);
-        ctx.rotate(roll*Math.PI/180);
-        ctx.drawImage(img,-canvas.width/2,-canvas.height/2,canvas.width,canvas.height);
-        ctx.restore();
-
-        updateStatus(msg + " ✔");
-    };
-
-    img.onerror = ()=>{
-        updateStatus("❌ 로딩 실패(API 또는 네트워크)");
-    };
+ startLiveView();
 }
 
-initGPS();
+// ==========================
+// 5) 날짜 선택 → pano 자동선택
+// ==========================
+function pickPano(){
+ let selectedDate = document.getElementById("datePicker").value;
+ if(!selectedDate) return panoList[0];
+
+ // YYYY-MM 비교
+ let target = selectedDate.slice(0,7);
+ let best = null;
+ let bestDiff = 9999999;
+
+ panoList.forEach(p=>{
+   let diff = Math.abs(Date.parse(p.date+"-01") - Date.parse(target+"-01"));
+   if(diff < bestDiff){
+     bestDiff = diff;
+     best = p;
+   }
+ });
+
+ return best;
+}
+
+// ==========================
+// 6) 실시간 화면 업데이트
+// ==========================
+async function startLiveView(){
+ document.getElementById("status").innerText = "🎥 라이브 스트리트뷰 시작";
+
+ setInterval(()=>{ renderFrame(); }, 200);  // 5fps
+}
+
+function renderFrame(){
+ if(panoList.length===0) return;
+
+ selectedPano = pickPano();
+
+ let heading = (yaw+360)%360;
+ let pitch_v = Math.max(-90, Math.min(90, pitch));
+
+ let url =
+   `https://maps.googleapis.com/maps/api/streetview?size=2048x2048`+
+   `&pano=${selectedPano.pano_id}`+
+   `&heading=${heading}`+
+   `&pitch=${pitch_v}`+
+   `&fov=90`+
+   `&key=${API_KEY}`;
+
+ let img = new Image();
+ img.src = url;
+
+ img.onload = ()=>{
+   ctx.clearRect(0,0,canvas.width,canvas.height);
+   ctx.save();
+   ctx.translate(canvas.width/2, canvas.height/2);
+   ctx.rotate(roll * Math.PI/180);
+   ctx.drawImage(img, -canvas.width/2, -canvas.height/2, canvas.width, canvas.height);
+   ctx.restore();
+ };
+
+}
+
+// ==========================
+// 7) 캡처
+// ==========================
+function capture(){
+ let data = canvas.toDataURL("image/png");
+ let a = document.createElement("a");
+ a.href = data;
+ a.download = "capture.png";
+ a.click();
+}
 </script>
 
 </body>
